@@ -18,22 +18,34 @@ html,body{margin:0;height:100%;overflow:hidden;font-family:system-ui,-apple-syst
 #dot.ok{background:#3fb950}#dot.wait{background:#e3b341}
 #st{margin-left:auto;font-weight:400;color:var(--mut);font-size:12px}
 .body{padding:0 12px 12px;display:grid;gap:8px}
-textarea,input[type=text]{width:100%;font:inherit;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:8px;padding:8px}
+textarea,input[type=text],input[type=number],select{width:100%;font:inherit;color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:8px;padding:8px}
 textarea{min-height:70px;resize:vertical}
 input[type=file]{font-size:12px;color:var(--mut);width:100%}
 button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:9px;background:var(--acc);color:#fff;cursor:pointer}
 label{font-size:11px;color:var(--mut)}
 #hint{position:fixed;left:max(14px,env(safe-area-inset-left));top:max(12px,env(safe-area-inset-top));font-size:12px;color:var(--mut);pointer-events:none}
+select{padding:7px;font-size:13px}select option{color:#000}
+#panel{max-height:calc(100vh - 24px);overflow:auto}
+#intel{position:fixed;left:max(14px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));display:none;font-size:12px;line-height:1.55;background:var(--panel);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:12px;padding:10px 12px;color:var(--fg)}
 </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="intel"></div>
 <div id="hint">Arraste para girar · role para aproximar</div>
 <details id="panel" open>
   <summary><span id="dot"></span>Painel de teste<span id="st">Status: desconectado</span></summary>
   <div class="body">
     <textarea id="txt" placeholder="Digite o texto a imprimir…"></textarea>
     <input type="file" id="file" accept="image/*">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+      <select id="o_cor"><option>Colorido</option><option>Preto e Branco</option><option>Sépia</option><option>Negativo</option><option>Alto Contraste</option></select>
+      <select id="o_papel"><option>A4</option><option>A5</option><option>A3</option><option>A2</option><option>A1</option><option>Ofício / Legal</option><option>Carta / Letter</option><option>Envelope</option></select>
+      <select id="o_orient"><option>Retrato</option><option>Paisagem</option></select>
+      <select id="o_dup"><option value="0">Um lado</option><option value="1">Frente e verso</option></select>
+      <select id="o_nf"><option value="1">1 por folha</option><option value="2">2 por folha</option><option value="4">4 por folha</option></select>
+      <input type="number" id="o_cop" min="1" max="10" value="1" title="Cópias">
+    </div>
     <button id="go">Imprimir</button>
     <label>ID do cliente Google (do passo a passo)</label>
     <input type="text" id="cid" spellcheck="false" placeholder="xxxx.apps.googleusercontent.com">
@@ -80,7 +92,7 @@ box(W+.06,.12,D+.06,mat(0xd5dae3,.5),0,H+.06,0);          // tampa
 box(W-.5,.04,.9,mat(0x2b3140,.3),0,H+.14,-.6);            // vidro do scanner
 box(1.9,.05,.9,mat(0xffffff,.8),0,H+.5,-.95).rotation.x=-.5; // bandeja traseira de entrada
 box(1.9,.04,.5,mat(0xf6f6f6,.9),0,H+.3,-.72);              // pilha de folhas
-box(1.7,.06,2.4,mat(0x2b3140,.6),0,.28,2.3);               // bandeja de saída
+box(1.9,.06,2.6,mat(0x2b3140,.6),0,.28,2.4);               // bandeja de saída
 box(1.55,.22,.04,mat(0x0e1118,.9),0,.33,D/2+.005);         // fenda
 box(.9,.05,.5,mat(0x3a4254,.4),-.9,H+.14,.6);              // painel de controle
 const led=box(.1,.03,.1,mat(0x3fb950,.3),-1.1,H+.18,.6);led.material.emissive=new THREE.Color(0x3fb950);
@@ -88,7 +100,7 @@ box(.14,.04,.14,mat(0x2f6df6,.4),-.8,H+.18,.6);
 [[-1.3,-.9],[1.3,-.9],[-1.3,.9],[1.3,.9]].forEach(p=>box(.25,.08,.25,mat(0x20242d,.8),p[0],.04,p[1]));
 
 /* ---------- Folha ---------- */
-const PW=1.414,PL=2.0,PY=.33;
+let PW=1.414,PL=2.0;const PY=.33;
 let paper=null,anim=null,busy=false;
 
 function wrap(ctx,text,maxW){
@@ -104,60 +116,89 @@ function wrap(ctx,text,maxW){
   return out;
 }
 
-function drawPaper(texto,img){
-  const cv=document.createElement("canvas");cv.width=794;cv.height=1123;
-  const g=cv.getContext("2d");
-  g.fillStyle="#fff";g.fillRect(0,0,cv.width,cv.height);
+const PAPEIS={"A1":[594,841],"A2":[420,594],"A3":[297,420],"A4":[210,297],"A5":[148,210],"Ofício / Legal":[216,356],"Carta / Letter":[216,279],"Envelope":[110,220]};
+const CFG0={copias:1,cor:"Colorido",papel:"A4",orient:"Retrato",duplex:false,paginas:"Tudo",porFolha:1};
+
+function drawCell(g,x,y,w,h,texto,img){
+  const m=w*.075,fs=Math.max(11,w*.038);
   if(img){
-    // imagem cobre a folha inteira (recorta o excesso, sem distorcer)
-    const s=Math.min(cv.width/img.width,cv.height/img.height);
-    const w=img.width*s,h=img.height*s;
-    g.drawImage(img,(cv.width-w)/2,(cv.height-h)/2,w,h);
+    const k=Math.min(w/img.width,h/img.height),iw=img.width*k,ih=img.height*k;
+    g.drawImage(img,x+(w-iw)/2,y+(h-ih)/2,iw,ih);
     if(texto){
-      g.font="30px system-ui,sans-serif";
-      const lines=wrap(g,texto,674).slice(0,6);
-      const bh=lines.length*44+50;
-      g.fillStyle="rgba(0,0,0,.55)";g.fillRect(0,cv.height-bh,cv.width,bh);
-      g.fillStyle="#fff";
-      lines.forEach((l,i)=>g.fillText(l,60,cv.height-bh+55+i*44));
+      g.font=fs+"px system-ui,sans-serif";
+      const L=wrap(g,texto,w-2*m).slice(0,6),bh=L.length*fs*1.45+fs*1.6;
+      g.fillStyle="rgba(0,0,0,.55)";g.fillRect(x,y+h-bh,w,bh);
+      g.fillStyle="#fff";L.forEach((l,i)=>g.fillText(l,x+m,y+h-bh+fs*1.9+i*fs*1.45));
     }
-    return cv;
+    return;
   }
-  g.fillStyle="#8a93a3";g.font="600 20px system-ui,sans-serif";
-  g.fillText("EMAIL TO PRINT",60,70);
-  g.font="16px system-ui,sans-serif";
-  g.fillText(new Date().toLocaleString("pt-BR"),60,98);
-  g.fillStyle="#d6dbe3";g.fillRect(60,114,674,2);
-  g.fillStyle="#1c2330";g.font="30px system-ui,sans-serif";
-  let y=170;
-  wrap(g,texto,674).slice(0,28).forEach(l=>{g.fillText(l,60,y);y+=44});
+  g.fillStyle="#8a93a3";g.font="600 "+fs*.67+"px system-ui,sans-serif";
+  g.fillText("EMAIL TO PRINT",x+m,y+m);
+  g.fillStyle="#d6dbe3";g.fillRect(x+m,y+m+fs*.9,w-2*m,Math.max(1,fs*.07));
+  g.fillStyle="#1c2330";g.font=fs+"px system-ui,sans-serif";
+  const lh=fs*1.45,mx=Math.max(1,Math.floor((h-2*m-fs*2)/lh));
+  wrap(g,texto,w-2*m).slice(0,mx).forEach((l,i)=>g.fillText(l,x+m,y+m+fs*2.6+i*lh));
+}
+
+function drawSheet(texto,imgs,cfg){
+  const d=PAPEIS[cfg.papel]||PAPEIS.A4,W=794,H=Math.round(794*d[1]/d[0]);
+  const cv=document.createElement("canvas");cv.width=W;cv.height=H;
+  const g=cv.getContext("2d");g.fillStyle="#fff";g.fillRect(0,0,W,H);
+  const land=cfg.orient==="Paisagem",cw=land?H:W,ch=land?W:H;
+  const cc=document.createElement("canvas");cc.width=cw;cc.height=ch;
+  const c=cc.getContext("2d");c.fillStyle="#fff";c.fillRect(0,0,cw,ch);
+  const n=cfg.porFolha,cols=n===4?2:(n===2&&land?2:1),rows=n===4?2:(n===2&&!land?2:1);
+  const w=cw/cols,h=ch/rows;
+  if(n>1){c.fillStyle="#d6dbe3";for(let i=1;i<cols;i++)c.fillRect(i*w-1,0,2,ch);for(let i=1;i<rows;i++)c.fillRect(0,i*h-1,cw,2)}
+  for(let i=0;i<cols*rows;i++){
+    if(imgs.length&&!imgs[i])break;
+    if(!imgs.length&&i>0)break;
+    drawCell(c,(i%cols)*w+4,Math.floor(i/cols)*h+4,w-8,h-8,i===0?texto:"",imgs[i]||null);
+  }
+  if(land){g.save();g.translate(W,0);g.rotate(Math.PI/2);g.drawImage(cc,0,0);g.restore()}
+  else g.drawImage(cc,0,0);
   return cv;
 }
 
 function setStatus(){}
+function limpar(){
+  if(!paper)return;
+  scene.remove(paper);
+  paper.traverse(o=>{if(o.material){if(o.material.map)o.material.map.dispose();o.material.dispose()}if(o.geometry)o.geometry.dispose()});
+  paper=null;
+}
+function mostrar(c){
+  $("intel").innerHTML="<b>Inteligência do sistema</b><br>Cópias: "+c.copias+"<br>Cor: "+c.cor+"<br>Papel: "+c.papel+"<br>Orientação: "+c.orient+"<br>Frente e verso: "+(c.duplex?"Sim":"Não")+"<br>Páginas: "+c.paginas+"<br>Por folha: "+c.porFolha;
+  $("intel").style.display="block";
+}
 
-function print(texto,img){
+function print(texto,front,back,cfg){
+  cfg=Object.assign({},CFG0,cfg||{});front=front||[];back=back||[];
   texto=(texto||"").trim();
-  if(!texto&&!img){busy=false;return}
-  if(paper){scene.remove(paper);paper.material.map.dispose();paper.material.dispose()}
-  let tex;
-  try{tex=new THREE.CanvasTexture(drawPaper(texto,img))}
-  catch(e){tex=new THREE.CanvasTexture(drawPaper(texto,null))}
-  tex.anisotropy=8;
-  paper=new THREE.Mesh(new THREE.PlaneGeometry(PW,PL),new THREE.MeshStandardMaterial({map:tex,roughness:.9,side:THREE.DoubleSide}));
-  paper.rotation.x=-Math.PI/2;paper.castShadow=true;
+  if(!texto&&!front.length){busy=false;return}
+  limpar();
+  const d=PAPEIS[cfg.papel]||PAPEIS.A4,e=Math.min(1.2,Math.sqrt(Math.max(d[0],d[1])/297));
+  PL=2.0*e;PW=PL*d[0]/d[1];
+  paper=new THREE.Group();
+  const geo=new THREE.PlaneGeometry(PW,PL);
+  const mk=cv=>{const t=new THREE.CanvasTexture(cv);t.anisotropy=8;return new THREE.Mesh(geo,new THREE.MeshStandardMaterial({map:t,roughness:.9}))};
+  const fr=mk(drawSheet(texto,front,cfg));fr.rotation.x=-Math.PI/2;fr.castShadow=true;paper.add(fr);
+  if(cfg.duplex){
+    const bg=new THREE.Group(),bk=mk(drawSheet("",back,cfg));
+    bk.rotation.x=-Math.PI/2;bg.rotation.z=Math.PI;bg.position.y=-.002;bg.add(bk);paper.add(bg);
+  }
+  paper.position.y=PY;
   scene.add(paper);
-  anim={t0:performance.now(),dur:6000};
+  mostrar(cfg);
+  anim={t0:performance.now(),dur:6000,cfg:cfg,fl:0};
   placePaper(0);
 }
 
 function placePaper(k){
-  // k: 0..1 → borda dianteira avança da posição interna até 65% para fora
-  const lead=.9+k*2.3;
-  paper.position.set(0,PY,lead-PL/2);
+  const lead=.9+k*(PL+.3);
+  paper.position.x=0;paper.position.z=lead-PL/2;
 }
 
-/* ---------- Carregar imagem de URL / dataURL ---------- */
 function loadImg(src,cb){
   const i=new Image();
   if(!src.startsWith("data:"))i.crossOrigin="anonymous";
@@ -165,31 +206,59 @@ function loadImg(src,cb){
   i.onerror=()=>cb(null);
   i.src=src;
 }
-function printFrom(texto,imgSrc){
-  if(imgSrc)loadImg(imgSrc,i=>print(texto||(i?"":"(imagem não pôde ser carregada)"),i));
-  else print(texto,null);
+const carregar=srcs=>Promise.all((srcs||[]).map(s=>new Promise(r=>loadImg(s,r))));
+function printFrom(texto,front,back,cfg){
+  if(typeof front==="string")front=front?[front]:[];
+  Promise.all([carregar(front),carregar(back)]).then(r=>{
+    const f=r[0].filter(Boolean),b=r[1].filter(Boolean);
+    print(texto||((front&&front.length&&!f.length)?"(imagem não pôde ser carregada)":""),f,b,cfg);
+  });
 }
 
-/* ---------- Painel manual ---------- */
-let fileImg=null;
-$("file").addEventListener("change",e=>{
-  const f=e.target.files[0];if(!f){fileImg=null;return}
-  const r=new FileReader();r.onload=()=>loadImg(r.result,i=>fileImg=i);r.readAsDataURL(f);
-});
-$("go").addEventListener("click",()=>print($("txt").value,fileImg));
-
 /* ---------- Fila ---------- */
-const fila=[],vistos={};
-function enfileirar(j){
-  if(j.id){if(vistos[j.id])return;vistos[j.id]=1}
-  const n=Math.min(Math.max(parseInt(j.copias)||1,1),10);
-  for(let i=0;i<n;i++)fila.push([j.texto||"",j.img||""]);
+const fila=[];
+function selecionar(imgs,spec){
+  if(!spec||spec==="Tudo")return imgs;
+  if(spec==="atual")return imgs.slice(0,1);
+  const ok=new Set();
+  spec.split(",").forEach(p=>{
+    const r=p.split(/[-_]/).map(x=>parseInt(x)).filter(x=>!isNaN(x));
+    if(r.length===1)ok.add(r[0]);
+    else if(r.length>1)for(let i=r[0];i<=r[1];i++)ok.add(i);
+  });
+  const sel=imgs.filter((_,i)=>ok.has(i+1));
+  return sel.length?sel:imgs;
+}
+function criarJob(texto,imgs,cfg){
+  imgs=selecionar(imgs,cfg.paginas);
+  const faces=[];
+  for(let i=0;i<imgs.length;i+=cfg.porFolha)faces.push(imgs.slice(i,i+cfg.porFolha));
+  if(!faces.length)faces.push([]);
+  const folhas=[],passo=cfg.duplex?2:1;
+  for(let i=0;i<faces.length;i+=passo)folhas.push([faces[i],faces[i+1]||[]]);
+  const n=Math.min(Math.max(cfg.copias,1),10);
+  for(let c=0;c<n;c++)folhas.forEach((f,i)=>fila.push({t:i===0?texto:"",f:f[0],b:f[1],cfg:cfg}));
   proximo();
 }
 function proximo(){
   if(busy||!fila.length)return;
-  busy=true;const f=fila.shift();printFrom(f[0],f[1]);
+  busy=true;const j=fila.shift();printFrom(j.t,j.f,j.b,j.cfg);
 }
+
+/* ---------- Painel manual ---------- */
+let fileSrc=null;
+$("file").addEventListener("change",e=>{
+  const f=e.target.files[0];if(!f){fileSrc=null;return}
+  const r=new FileReader();r.onload=()=>fileSrc=r.result;r.readAsDataURL(f);
+});
+$("go").addEventListener("click",async()=>{
+  const cfg=Object.assign({},CFG0,{
+    copias:parseInt($("o_cop").value)||1,cor:$("o_cor").value,papel:$("o_papel").value,
+    orient:$("o_orient").value,duplex:$("o_dup").value==="1",porFolha:parseInt($("o_nf").value)
+  });
+  const imgs=fileSrc?[await prepararImg(fileSrc,cfg.cor)]:[];
+  criarJob($("txt").value.trim(),imgs,cfg);
+});
 
 /* ---------- Gmail ---------- */
 const GMAIL="https://gmail.googleapis.com/gmail/v1/users/me/";
@@ -237,14 +306,29 @@ async function checar(){
 
 function interpretar(t){
   t=(t||"").toLowerCase();
-  const c={copias:1,cor:"Colorido"};
+  const c=Object.assign({},CFG0);
+  const tem=(...a)=>a.some(x=>t.includes(x));
+  const pal=(...a)=>a.some(x=>new RegExp("(^|[^a-z0-9])"+x+"([^a-z0-9]|$)").test(t));
   const m=t.match(/(\d+)\s*(?:copia|copias|cópia|cópias|via|vias|copy|copies)/);
   if(m)c.copias=parseInt(m[1]);
-  const tem=(...a)=>a.some(x=>t.includes(x));
   if(tem("sepia","sépia","vintage"))c.cor="Sépia";
   else if(tem("negativo","inverter","invert"))c.cor="Negativo";
   else if(tem("contraste","high contrast"))c.cor="Alto Contraste";
-  else if(tem("preto e branco"," pb","p&b","black and white"," bw"))c.cor="Preto e Branco";
+  else if(tem("preto e branco","p&b","black and white")||pal("pb","bw"))c.cor="Preto e Branco";
+  else if(tem("color")||pal("cor"))c.cor="Colorido";
+  const p=["a1","a2","a3","a4","a5"].find(x=>pal(x));
+  if(p)c.papel=p.toUpperCase();
+  else if(tem("oficio","ofício","legal"))c.papel="Ofício / Legal";
+  else if(tem("carta","letter"))c.papel="Carta / Letter";
+  else if(tem("envelope"))c.papel="Envelope";
+  if(tem("paisagem","horizontal","landscape"))c.orient="Paisagem";
+  else if(tem("retrato","vertical","portrait"))c.orient="Retrato";
+  if(tem("frente e verso","frente-verso","duplex","double sided","two sided"))c.duplex=true;
+  const mp=t.match(/(?:paginas?|páginas?|pages?)\s*([\d\-_,]+)/);
+  if(mp&&mp[1].replace(/[,_\-]+$/,""))c.paginas=mp[1].replace(/[,_\-]+$/,"");
+  else if(tem("pagina atual","página atual","current page"))c.paginas="atual";
+  if(tem("2 paginas por folha","2 páginas por folha","2 por folha","2 pages per sheet"))c.porFolha=2;
+  else if(tem("4 paginas por folha","4 páginas por folha","4 por folha","4 pages per sheet"))c.porFolha=4;
   return c;
 }
 
@@ -284,22 +368,19 @@ async function processar(id){
   const corpo=tp?txt(tp.body.data).trim():"";
   const cfg=interpretar(corpo+" "+assunto);
   if(cfg.copias<=0)return;
-  let enviou=false;const outros=[];
+  const imgs=[],outros=[];
   for(const p of partes){
     if(!p.filename)continue;
     if(/^image\//.test(p.mimeType)){
       let d=p.body.data;
       if(!d&&p.body.attachmentId)d=(await api("messages/"+id+"/attachments/"+p.body.attachmentId)).data;
-      if(!d)continue;
-      const img=await prepararImg("data:"+p.mimeType+";base64,"+b64(d),cfg.cor);
-      enfileirar({img:img,copias:cfg.copias});enviou=true;
+      if(d)imgs.push(await prepararImg("data:"+p.mimeType+";base64,"+b64(d),cfg.cor));
     }else outros.push(p.filename);
   }
-  if(!enviou){
-    let t=assunto+"\n\n"+corpo;
-    if(outros.length)t+="\n\n[Anexos: "+outros.join(", ")+"]";
-    enfileirar({texto:t,copias:cfg.copias});
-  }
+  if(imgs.length)return criarJob("",imgs,cfg);
+  let t=assunto+"\n\n"+corpo;
+  if(outros.length)t+="\n\n[Anexos: "+outros.join(", ")+"]";
+  criarJob(t,[],cfg);
 }
 
 /* ---------- Loop ---------- */
@@ -317,11 +398,16 @@ function frame(now){
     // avanço em "passos" para parecer cabeçote de impressão
     const step=Math.floor(ease(t)*60)/60;
     placePaper(step);
+    const dup=anim.cfg.duplex;
+    if(t>=1&&dup&&!anim.fl)anim.fl=now+800;
+    const fk=(dup&&anim.fl)?Math.min(Math.max((now-anim.fl)/2200,0),1):0;
+    paper.rotation.z=ease(fk)*Math.PI;
+    paper.position.y=PY+Math.sin(ease(fk)*Math.PI)*1.0;
     printer.position.x=t<1?Math.sin(now*.09)*.006:0;
     printer.position.y=t<1?Math.sin(now*.13)*.004:0;
     led.material.emissive.setHex(t<1&&Math.floor(now/120)%2?0xffb020:0x3fb950);
     led.material.color.copy(led.material.emissive);
-    if(t>=1){anim=null;setTimeout(()=>{busy=false;proximo()},2500)}
+    if(t>=1&&(!dup||fk>=1)){anim=null;setTimeout(()=>{busy=false;proximo()},2500)}
   }
   controls.update();
   renderer.render(scene,camera);
